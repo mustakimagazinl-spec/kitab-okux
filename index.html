@@ -1,0 +1,674 @@
+<!DOCTYPE html>
+<html lang="ug" dir="rtl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>كىتاب ئوقۇش خاتىرىسى</title>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script type="module">
+import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js";
+import { getFirestore, doc, getDoc, setDoc, onSnapshot, collection, getDocs } from "https://www.gstatic.com/firebasejs/10.12.0/firebase-firestore.js";
+
+const firebaseConfig = {
+  apiKey: "AIzaSyAbcYUdNHOiCvdu3b1xVNUPC14K7YSbT4c",
+  authDomain: "kitab-okux-hatirisi.firebaseapp.com",
+  projectId: "kitab-okux-hatirisi",
+  storageBucket: "kitab-okux-hatirisi.firebasestorage.app",
+  messagingSenderId: "314829432766",
+  appId: "1:314829432766:web:2ca052cb578e206219bbef",
+  measurementId: "G-JDKBHQHFKF"
+};
+
+const app = initializeApp(firebaseConfig);
+const db = getFirestore(app);
+
+const ADMIN_PIN = '1234';
+const INACTIVE_DAYS = 3;
+
+const PALETTES = [
+  {bg:'#EEEDFE',border:'#AFA9EC',avatar:'#CECBF6',avatarText:'#3C3489',metric:'#534AB7',metricLight:'#EEEDFE',dark:'#26215C'},
+  {bg:'#E1F5EE',border:'#5DCAA5',avatar:'#9FE1CB',avatarText:'#085041',metric:'#0F6E56',metricLight:'#E1F5EE',dark:'#04342C'},
+  {bg:'#FAECE7',border:'#F0997B',avatar:'#F5C4B3',avatarText:'#712B13',metric:'#993C1D',metricLight:'#FAECE7',dark:'#4A1B0C'},
+  {bg:'#E6F1FB',border:'#85B7EB',avatar:'#B5D4F4',avatarText:'#0C447C',metric:'#185FA5',metricLight:'#E6F1FB',dark:'#042C53'},
+  {bg:'#EAF3DE',border:'#97C459',avatar:'#C0DD97',avatarText:'#27500A',metric:'#3B6D11',metricLight:'#EAF3DE',dark:'#173404'},
+  {bg:'#FAEEDA',border:'#EF9F27',avatar:'#FAC775',avatarText:'#633806',metric:'#BA7517',metricLight:'#FAEEDA',dark:'#412402'},
+  {bg:'#FBEAF0',border:'#ED93B1',avatar:'#F4C0D1',avatarText:'#72243E',metric:'#993556',metricLight:'#FBEAF0',dark:'#4B1528'},
+  {bg:'#F1EFE8',border:'#B4B2A9',avatar:'#D3D1C7',avatarText:'#444441',metric:'#5F5E5A',metricLight:'#F1EFE8',dark:'#2C2C2A'},
+];
+
+// ── State ──────────────────────────────────────────
+let STATE = {
+  persons: [],
+  entries: [],
+  cycles: [],
+  activeCycle: null,
+  loaded: false
+};
+
+// ── Firestore helpers ──────────────────────────────
+async function loadAll() {
+  const [personsSnap, entriesSnap, cyclesSnap, activeSnap] = await Promise.all([
+    getDoc(doc(db,'app','persons')),
+    getDoc(doc(db,'app','entries')),
+    getDoc(doc(db,'app','cycles')),
+    getDoc(doc(db,'app','activeCycle')),
+  ]);
+  STATE.persons = personsSnap.exists() ? personsSnap.data().list || [] : [];
+  STATE.entries = entriesSnap.exists() ? entriesSnap.data().list || [] : [];
+  STATE.cycles = cyclesSnap.exists() ? cyclesSnap.data().list || [] : [];
+  STATE.activeCycle = activeSnap.exists() ? activeSnap.data().value || null : null;
+  STATE.loaded = true;
+}
+
+async function savePersons() { await setDoc(doc(db,'app','persons'), {list: STATE.persons}); }
+async function saveEntries() { await setDoc(doc(db,'app','entries'), {list: STATE.entries}); }
+async function saveCycles()  { await setDoc(doc(db,'app','cycles'),  {list: STATE.cycles});  }
+async function saveActiveCycle() { await setDoc(doc(db,'app','activeCycle'), {value: STATE.activeCycle}); }
+
+// ── Utils ──────────────────────────────────────────
+function today() {
+  const d = new Date();
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+}
+function initials(n) { return n.split(' ').map(w=>w[0]).join('').toUpperCase().slice(0,2); }
+function pal(i) { return PALETTES[i % PALETTES.length]; }
+function daysBetween(a,b) { return Math.round((new Date(b)-new Date(a))/86400000); }
+
+function calcStreak(person) {
+  const cycle = STATE.activeCycle;
+  const dates = [...new Set(STATE.entries.filter(e=>e.person===person&&(!cycle||e.cycleId===cycle.id)).map(e=>e.date))].sort().reverse();
+  if (!dates.length) return 0;
+  let streak=0, cur=new Date(today());
+  for (let d of dates) {
+    const diff = Math.round((cur - new Date(d))/86400000);
+    if (diff === streak) { streak++; cur = new Date(d); }
+    else if (diff > 1) break;
+  }
+  return streak;
+}
+
+function isInactive(person) {
+  const cycle = STATE.activeCycle;
+  const last = STATE.entries.filter(e=>e.person===person&&(!cycle||e.cycleId===cycle.id)).map(e=>e.date).sort().pop();
+  if (!last) return true;
+  return daysBetween(last, today()) >= INACTIVE_DAYS;
+}
+
+function show(id) {
+  ['view-home','view-participant','view-admin-pin','view-admin'].forEach(v => {
+    document.getElementById(v).style.display = v===id ? '' : 'none';
+  });
+}
+
+function setHTML(id, html) { document.getElementById(id).innerHTML = html; }
+
+// ── Home ───────────────────────────────────────────
+function renderHome() {
+  const cycle = STATE.activeCycle;
+  let html = `<div style="text-align:center;padding:1.5rem 0 1rem">
+    <div style="font-size:26px;font-weight:600;color:#534AB7;margin-bottom:4px">كىتاب ئوقۇش خاتىرىسى</div>
+    <div style="font-size:13px;color:#888">${today()}</div>
+  </div>`;
+
+  if (cycle) {
+    html += `<div style="background:#E1F5EE;border:0.5px solid #5DCAA5;border-radius:12px;padding:12px 16px;margin-bottom:1rem;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+      <div><span style="font-weight:500;color:#085041">چەمبەر يۈرۈشلۈك: </span><span style="color:#085041">${cycle.name}</span></div>
+      <div style="font-size:12px;color:#0F6E56">${cycle.start} — داۋام ئەتمەكتە</div>
+    </div>`;
+  } else {
+    html += `<div style="background:#FAEEDA;border:0.5px solid #EF9F27;border-radius:12px;padding:12px 16px;margin-bottom:1rem;color:#633806">ھازىر پائال چەمبەر يوق. باشقۇرغۇچىغا مۇراجىئەت قىلىڭ.</div>`;
+  }
+
+  html += `<div style="font-size:14px;font-weight:500;color:#888;margin-bottom:12px">ئۆزىڭىزنى تاللاڭ</div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px;margin-bottom:2rem">`;
+
+  STATE.persons.forEach((p, i) => {
+    const pl = pal(i);
+    const inactive = isInactive(p.name);
+    const streak = calcStreak(p.name);
+    html += `<div onclick="openParticipant('${p.name.replace(/'/g,"\\'")}')" 
+      style="background:${pl.bg};border:1.5px solid ${pl.border};border-radius:14px;padding:1rem;cursor:pointer;transition:transform .1s,opacity .1s"
+      onmouseover="this.style.transform='scale(1.02)'" onmouseout="this.style.transform='scale(1)'">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+        <div style="width:36px;height:36px;border-radius:50%;background:${pl.avatar};color:${pl.avatarText};display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:500">${initials(p.name)}</div>
+        <div style="font-weight:500;font-size:14px;color:${pl.avatarText}">${p.name}</div>
+      </div>
+      ${p.book ? `<div style="font-size:11px;color:${pl.metric};margin-bottom:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">&#128214; ${p.book}</div>` : ''}
+      <div style="display:flex;gap:5px;flex-wrap:wrap">
+        ${inactive
+          ? `<span style="background:#FCEBEB;color:#A32D2D;border-radius:20px;padding:2px 8px;font-size:11px;font-weight:500">ھەركەتسىز</span>`
+          : `<span style="background:#EAF3DE;color:#3B6D11;border-radius:20px;padding:2px 8px;font-size:11px;font-weight:500">ئاكتىپ</span>`}
+        ${streak >= 2 ? `<span style="background:${pl.metricLight};color:${pl.metric};border-radius:20px;padding:2px 8px;font-size:11px;font-weight:500">${streak} كۈن</span>` : ''}
+      </div>
+    </div>`;
+  });
+
+  html += `</div>
+  <div style="text-align:center;padding-top:1rem;border-top:0.5px solid #eee">
+    <button onclick="openAdminPin()" style="background:none;border:0.5px solid #ddd;border-radius:8px;padding:8px 20px;font-size:13px;color:#888;cursor:pointer">باشقۇرغۇچى كىرىش</button>
+  </div>`;
+
+  setHTML('view-home', html);
+  show('view-home');
+}
+
+// ── Participant ────────────────────────────────────
+window.openParticipant = function(name) {
+  renderParticipant(name);
+  show('view-participant');
+};
+
+function renderParticipant(name) {
+  const idx = STATE.persons.findIndex(p => p.name === name);
+  const person = STATE.persons[idx];
+  const pl = pal(idx);
+  const cycle = STATE.activeCycle;
+  const myEntries = STATE.entries.filter(e => e.person===name && (!cycle||e.cycleId===cycle.id));
+  const todayEntry = myEntries.find(e => e.date === today());
+  const totalPages = myEntries.reduce((s,e)=>s+e.pages,0);
+  const streak = calcStreak(name);
+  const activeDays = new Set(myEntries.map(e=>e.date)).size;
+
+  let html = `<div style="background:${pl.bg};border-bottom:2px solid ${pl.border};padding:1.25rem;border-radius:14px 14px 0 0">
+    <button onclick="goHome()" style="background:${pl.avatar};border:none;color:${pl.avatarText};border-radius:8px;padding:6px 14px;font-size:13px;cursor:pointer;margin-bottom:12px">&#8592; قايتىش</button>
+    <div style="display:flex;align-items:center;gap:12px">
+      <div style="width:54px;height:54px;border-radius:50%;background:${pl.avatar};color:${pl.avatarText};display:flex;align-items:center;justify-content:center;font-size:17px;font-weight:500">${initials(name)}</div>
+      <div>
+        <div style="font-size:21px;font-weight:600;color:${pl.avatarText}">${name}</div>
+        <div style="font-size:13px;color:${pl.metric}">${person.book ? 'كىتاب: '+person.book : 'كىتاب تەييارلانمىغان'}</div>
+      </div>
+    </div>
+  </div>
+  <div style="background:#fff;border:0.5px solid #eee;border-top:none;border-radius:0 0 14px 14px;padding:1.25rem;margin-bottom:1rem">
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:1rem">
+      <div style="background:${pl.bg};border-radius:10px;padding:12px"><div style="font-size:11px;color:${pl.metric};font-weight:500;margin-bottom:3px">ئومۇمىي بەت</div><div style="font-size:22px;font-weight:600;color:${pl.avatarText}">${totalPages}</div></div>
+      <div style="background:${pl.bg};border-radius:10px;padding:12px"><div style="font-size:11px;color:${pl.metric};font-weight:500;margin-bottom:3px">ئاكتىپ كۈن</div><div style="font-size:22px;font-weight:600;color:${pl.avatarText}">${activeDays}</div></div>
+      <div style="background:${pl.bg};border-radius:10px;padding:12px"><div style="font-size:11px;color:${pl.metric};font-weight:500;margin-bottom:3px">رەت سانى</div><div style="font-size:22px;font-weight:600;color:${pl.avatarText}">${streak}</div></div>
+    </div>`;
+
+  if (!cycle) {
+    html += `<div style="background:#FAEEDA;border-radius:10px;padding:10px 14px;color:#633806;font-size:13px;margin-bottom:10px">ھازىر پائال چەمبەر يوق.</div>`;
+  } else {
+    if (todayEntry) {
+      html += `<div style="background:#EAF3DE;border-radius:10px;padding:10px 14px;color:#27500A;font-size:13px;margin-bottom:12px">بۈگۈن خاتىرىلەندى: <strong>${todayEntry.pages} بەت</strong></div>`;
+    }
+    html += `<div style="font-size:14px;font-weight:500;color:${pl.avatarText};margin-bottom:10px">${todayEntry ? 'خاتىرىنى ئۆزگەرتىش' : 'بۈگۈن ئوقۇغان بەت سانىنى كىرگۈزۈڭ'}</div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
+      <div style="flex:1;min-width:110px">
+        <label style="font-size:12px;color:${pl.metric};display:block;margin-bottom:4px">بەت سانى</label>
+        <input type="number" id="pp-pages" min="1" placeholder="مەسىلەن: 35" value="${todayEntry?todayEntry.pages:''}"
+          style="width:100%;padding:8px 10px;border:1.5px solid ${pl.border};border-radius:8px;font-size:15px;background:${pl.bg};color:${pl.avatarText}" />
+      </div>
+      <div style="min-width:160px">
+        <label style="font-size:12px;color:${pl.metric};display:block;margin-bottom:4px">كۈن</label>
+        <input type="date" id="pp-date" value="${today()}"
+          style="width:100%;padding:8px 10px;border:1.5px solid ${pl.border};border-radius:8px;font-size:14px;background:${pl.bg};color:${pl.avatarText}" />
+      </div>
+      <button onclick="submitReading('${name.replace(/'/g,"\\'")}','${idx}')"
+        style="background:${pl.metric};color:#fff;border:none;border-radius:8px;padding:9px 20px;font-size:14px;cursor:pointer;font-weight:500">ساقلاش</button>
+    </div>
+    <div id="pp-msg" style="font-size:13px;margin-top:8px;display:none"></div>`;
+  }
+  html += `</div>`;
+
+  if (myEntries.length) {
+    html += `<div style="background:#fff;border:0.5px solid #eee;border-radius:14px;padding:1.25rem">
+      <div style="font-size:14px;font-weight:500;color:${pl.metric};margin-bottom:10px">ئاخىرقى خاتىرىلەر</div>`;
+    myEntries.sort((a,b)=>b.date.localeCompare(a.date)).slice(0,8).forEach(e => {
+      html += `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 12px;background:${pl.bg};border-radius:8px;margin-bottom:6px;font-size:13px">
+        <span style="color:${pl.avatarText}">${e.date}</span>
+        <span style="font-weight:600;color:${pl.metric}">${e.pages} بەت</span>
+      </div>`;
+    });
+    html += `</div>`;
+  }
+
+  setHTML('view-participant', html);
+}
+
+window.submitReading = async function(name, idx) {
+  const pages = parseInt(document.getElementById('pp-pages').value);
+  const date = document.getElementById('pp-date').value;
+  if (!pages || pages < 1) { showPPMsg('بەت سانىنى كىرگۈزۈڭ','warn'); return; }
+  const cycle = STATE.activeCycle;
+  const existing = STATE.entries.findIndex(e => e.person===name && e.date===date && (!cycle||e.cycleId===cycle?.id));
+  if (existing >= 0) STATE.entries.splice(existing, 1);
+  STATE.entries.push({person:name, pages, date, cycleId: cycle?.id||'free'});
+  await saveEntries();
+  showPPMsg(`${pages} بەت مۇۋەپپەقىيەتلىك ساقلاندى!`, 'success');
+  setTimeout(() => renderParticipant(name), 700);
+};
+
+function showPPMsg(txt, type) {
+  const el = document.getElementById('pp-msg');
+  if (!el) return;
+  el.style.display = 'block';
+  el.style.color = type==='success' ? '#3B6D11' : '#993C1D';
+  el.textContent = txt;
+}
+
+// ── Admin PIN ──────────────────────────────────────
+let pinEntry = '';
+window.openAdminPin = function() { renderPinScreen(); show('view-admin-pin'); };
+
+function renderPinScreen() {
+  pinEntry = '';
+  setHTML('view-admin-pin', `<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:3rem 1rem;gap:1rem">
+    <div style="font-size:18px;font-weight:600;color:#534AB7">باشقۇرغۇچى كىرىش</div>
+    <div style="font-size:13px;color:#888">PIN كودىنى كىرگۈزۈڭ</div>
+    <div style="display:flex;gap:12px;margin:1rem 0" id="pin-dots">
+      ${[0,1,2,3].map(i=>`<div id="pd${i}" style="width:14px;height:14px;border-radius:50%;background:#eee;border:0.5px solid #ccc;transition:background .15s"></div>`).join('')}
+    </div>
+    <div id="pin-error" style="font-size:13px;color:#A32D2D;height:18px"></div>
+    <div style="display:grid;grid-template-columns:repeat(3,64px);gap:8px">
+      ${[1,2,3,4,5,6,7,8,9,'',0,'⌫'].map(k=>`<button onclick="pinTap('${k}')" 
+        style="width:64px;height:64px;border-radius:50%;border:0.5px solid #ddd;background:#fff;font-size:18px;font-weight:500;cursor:pointer;${k===''?'visibility:hidden':''}">${k}</button>`).join('')}
+    </div>
+    <button onclick="goHome()" style="margin-top:1rem;background:none;border:0.5px solid #ddd;border-radius:8px;padding:7px 18px;font-size:13px;color:#888;cursor:pointer">بەكىتىش</button>
+  </div>`);
+}
+
+window.pinTap = function(k) {
+  if (k==='⌫') { pinEntry = pinEntry.slice(0,-1); }
+  else if (pinEntry.length < 4 && k !== '') { pinEntry += k; }
+  for (let i=0;i<4;i++) {
+    const d = document.getElementById('pd'+i);
+    if (d) { d.style.background = i<pinEntry.length ? '#534AB7' : '#eee'; d.style.borderColor = i<pinEntry.length ? '#534AB7' : '#ccc'; }
+  }
+  if (pinEntry.length === 4) {
+    if (pinEntry === ADMIN_PIN) {
+      show('view-admin');
+      renderAdmin('members');
+    } else {
+      document.getElementById('pin-error').textContent = 'PIN خاتا. قايتا سىناڭ.';
+      pinEntry = '';
+      for (let i=0;i<4;i++) { const d=document.getElementById('pd'+i); if(d){d.style.background='#eee';d.style.borderColor='#ccc';} }
+    }
+  }
+};
+
+// ── Admin ──────────────────────────────────────────
+function renderAdmin(tab) {
+  const tabs = ['members','cycle','summary','leaderboard','archive','export'];
+  const labels = ['ئەزالار','چەمبەر','خۇلاسە','رەتلىك','ئارخىپ','چىقىرىش'];
+  let html = `<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1rem;flex-wrap:wrap;gap:8px;padding:0 0 .5rem;border-bottom:0.5px solid #eee">
+    <div style="font-size:18px;font-weight:600;color:#534AB7">باشقۇرغۇچى تاختىسى</div>
+    <button onclick="goHome()" style="background:none;border:0.5px solid #ddd;border-radius:8px;padding:7px 14px;font-size:13px;color:#888;cursor:pointer">&#8592; باش بەت</button>
+  </div>
+  <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:1.5rem;border-bottom:0.5px solid #eee;padding-bottom:0">`;
+  tabs.forEach((t,i) => html += `<button onclick="renderAdmin('${t}')" 
+    style="padding:8px 14px;font-size:13px;cursor:pointer;border:none;background:transparent;color:${t===tab?'#534AB7':'#888'};border-bottom:${t===tab?'2px solid #534AB7':'2px solid transparent'};margin-bottom:-1px;font-weight:${t===tab?'500':'400'}">${labels[i]}</button>`);
+  html += `</div><div id="admin-body"></div>`;
+  setHTML('view-admin', html);
+  renderAdminTab(tab);
+}
+
+function renderAdminTab(tab) {
+  const el = document.getElementById('admin-body');
+  if (!el) return;
+  if (tab==='members') el.innerHTML = tabMembers();
+  else if (tab==='cycle') el.innerHTML = tabCycle();
+  else if (tab==='summary') el.innerHTML = tabSummary();
+  else if (tab==='leaderboard') el.innerHTML = tabLeaderboard();
+  else if (tab==='archive') el.innerHTML = tabArchive();
+  else if (tab==='export') el.innerHTML = tabExport();
+}
+
+// Members tab
+function tabMembers() {
+  const cycle = STATE.activeCycle;
+  let html = `<div style="background:#fff;border:0.5px solid #eee;border-radius:14px;padding:1.25rem;margin-bottom:1rem">
+    <div style="font-size:14px;font-weight:500;margin-bottom:12px">ئەزا قوشۇش</div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:8px">
+      <div style="flex:1;min-width:160px">
+        <label style="font-size:12px;color:#888;display:block;margin-bottom:4px">ئىسىم</label>
+        <input type="text" id="am-name" placeholder="تولۇق ئىسىم" style="width:100%;padding:8px 10px;border:0.5px solid #ddd;border-radius:8px;font-size:14px" />
+      </div>
+      <button onclick="adminAddPerson()" style="background:#534AB7;color:#fff;border:none;border-radius:8px;padding:9px 20px;font-size:14px;cursor:pointer">قوشۇش</button>
+    </div>
+    <div id="am-msg" style="font-size:13px;color:#3B6D11;display:none;margin-bottom:8px"></div>
+    <hr style="border:none;border-top:0.5px solid #eee;margin:12px 0" />`;
+
+  if (!STATE.persons.length) {
+    html += `<div style="font-size:13px;color:#888">ئەزا يوق.</div>`;
+  }
+  STATE.persons.forEach((p, i) => {
+    const pl = pal(i);
+    html += `<div style="display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:0.5px solid #f5f5f5;flex-wrap:wrap">
+      <div style="width:32px;height:32px;border-radius:50%;background:${pl.avatar};color:${pl.avatarText};display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:500;flex-shrink:0">${initials(p.name)}</div>
+      <div style="flex:1;min-width:0">
+        <div style="font-weight:500;font-size:14px">${p.name}</div>
+        <div style="font-size:12px;color:#888">${p.book||'كىتاب تەييارلانمىغان'}</div>
+      </div>
+      ${cycle ? `<input type="text" id="book-${i}" placeholder="كىتاب ئىسمى" value="${p.book||''}" 
+        style="max-width:180px;font-size:13px;padding:6px 10px;border:0.5px solid #ddd;border-radius:8px" />
+      <button onclick="setBook(${i})" style="background:#0F6E56;color:#fff;border:none;border-radius:8px;padding:6px 12px;font-size:12px;cursor:pointer">ساقلاش</button>` : ''}
+      <button onclick="removePerson(${i})" style="background:none;color:#A32D2D;border:0.5px solid #F0957580;border-radius:8px;padding:5px 10px;font-size:12px;cursor:pointer">ئۆچۈرۈش</button>
+    </div>`;
+  });
+  html += `</div>`;
+  return html;
+}
+
+window.adminAddPerson = async function() {
+  const name = document.getElementById('am-name')?.value?.trim();
+  if (!name) return;
+  if (STATE.persons.find(p=>p.name===name)) { alert('بۇ ئىسىم مەۋجۇت.'); return; }
+  STATE.persons.push({name, book:''});
+  await savePersons();
+  const msg = document.getElementById('am-msg');
+  if (msg) { msg.textContent=name+' قوشۇلدى.'; msg.style.display='block'; setTimeout(()=>msg.style.display='none',2000); }
+  renderAdminTab('members');
+};
+
+window.setBook = async function(idx) {
+  const val = document.getElementById('book-'+idx)?.value?.trim()||'';
+  STATE.persons[idx].book = val;
+  await savePersons();
+  renderAdminTab('members');
+};
+
+window.removePerson = async function(idx) {
+  if (!confirm(STATE.persons[idx].name+' نى ئۆچۈرەمسىز؟')) return;
+  STATE.persons.splice(idx,1);
+  await savePersons();
+  renderAdminTab('members');
+};
+
+// Cycle tab
+function tabCycle() {
+  const cycle = STATE.activeCycle;
+  let html = `<div style="background:#fff;border:0.5px solid #eee;border-radius:14px;padding:1.25rem">`;
+  if (cycle) {
+    html += `<div style="background:#EAF3DE;border-radius:10px;padding:10px 14px;margin-bottom:1rem;color:#27500A;font-size:13px">پائال چەمبەر: <strong>${cycle.name}</strong> — ${cycle.start} دىن باشلانغان</div>
+    <div style="font-size:13px;color:#888;margin-bottom:12px">چەمبەرنى ئاخىرلاشتۇرۇش ئارخىپقا ساقلايدۇ.</div>
+    <button onclick="endCycle()" style="background:#BA7517;color:#fff;border:none;border-radius:8px;padding:9px 20px;font-size:14px;cursor:pointer">چەمبەرنى ئاخىرلاشتۇرۇش</button>`;
+  } else {
+    html += `<div style="font-size:14px;font-weight:500;margin-bottom:12px">يېڭى چەمبەر باشلاش</div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px">
+      <div style="flex:1;min-width:160px">
+        <label style="font-size:12px;color:#888;display:block;margin-bottom:4px">چەمبەر ئىسمى</label>
+        <input type="text" id="cy-name" placeholder="مەسىلەن: 2025 — مايىس ئايى" style="width:100%;padding:8px 10px;border:0.5px solid #ddd;border-radius:8px;font-size:14px" />
+      </div>
+      <div>
+        <label style="font-size:12px;color:#888;display:block;margin-bottom:4px">باشلاش كۈنى</label>
+        <input type="date" id="cy-start" value="${today()}" style="padding:8px 10px;border:0.5px solid #ddd;border-radius:8px;font-size:14px" />
+      </div>
+    </div>
+    <button onclick="startCycle()" style="background:#534AB7;color:#fff;border:none;border-radius:8px;padding:9px 20px;font-size:14px;cursor:pointer">چەمبەر باشلاش</button>`;
+  }
+  html += `</div>`;
+  return html;
+}
+
+window.startCycle = async function() {
+  const name = document.getElementById('cy-name')?.value?.trim();
+  const start = document.getElementById('cy-start')?.value;
+  if (!name||!start) { alert('ئىسىم ۋە كۈننى كىرگۈزۈڭ.'); return; }
+  STATE.activeCycle = {id:'cycle_'+Date.now(), name, start, end:null};
+  await saveActiveCycle();
+  renderAdminTab('cycle');
+};
+
+window.endCycle = async function() {
+  if (!confirm('چەمبەرنى ئاخىرلاشتۇرامسىز؟')) return;
+  STATE.activeCycle.end = today();
+  const archived = {...STATE.activeCycle, entries: STATE.entries.filter(e=>e.cycleId===STATE.activeCycle.id)};
+  STATE.cycles.push(archived);
+  await saveCycles();
+  STATE.activeCycle = null;
+  await saveActiveCycle();
+  renderAdminTab('cycle');
+};
+
+// Summary tab
+function tabSummary() {
+  const cycle = STATE.activeCycle;
+  if (!cycle) return `<div style="background:#FAEEDA;border-radius:10px;padding:10px 14px;color:#633806;font-size:13px">پائال چەمبەر يوق.</div>`;
+  if (!STATE.persons.length) return `<div style="font-size:13px;color:#888">ئەزا يوق.</div>`;
+  let html = `<div style="font-size:13px;color:#888;margin-bottom:1rem"><span style="font-weight:500;color:#534AB7">${cycle.name}</span> خۇلاسىسى</div>`;
+  STATE.persons.forEach((p, i) => {
+    const pl = pal(i);
+    const pe = STATE.entries.filter(e=>e.person===p.name&&e.cycleId===cycle.id);
+    const total = pe.reduce((s,e)=>s+e.pages,0);
+    const days = new Set(pe.map(e=>e.date)).size;
+    const avg = days ? Math.round(total/days) : 0;
+    const streak = calcStreak(p.name);
+    html += `<div style="background:#fff;border:0.5px solid #eee;border-left:3px solid ${pl.metric};border-radius:0 14px 14px 0;padding:1.25rem;margin-bottom:10px">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px">
+        <div style="width:38px;height:38px;border-radius:50%;background:${pl.avatar};color:${pl.avatarText};display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:500">${initials(p.name)}</div>
+        <div><div style="font-weight:500">${p.name}</div><div style="font-size:12px;color:#888">${p.book||'كىتاب يوق'}</div></div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px">
+        <div style="background:${pl.bg};border-radius:8px;padding:10px"><div style="font-size:11px;color:${pl.metric};font-weight:500">ئومۇمىي بەت</div><div style="font-size:20px;font-weight:600;color:${pl.avatarText}">${total}</div></div>
+        <div style="background:${pl.bg};border-radius:8px;padding:10px"><div style="font-size:11px;color:${pl.metric};font-weight:500">ئاكتىپ كۈن</div><div style="font-size:20px;font-weight:600;color:${pl.avatarText}">${days}</div></div>
+        <div style="background:${pl.bg};border-radius:8px;padding:10px"><div style="font-size:11px;color:${pl.metric};font-weight:500">ئوتتۇرا</div><div style="font-size:20px;font-weight:600;color:${pl.avatarText}">${avg}</div></div>
+        <div style="background:${pl.bg};border-radius:8px;padding:10px"><div style="font-size:11px;color:${pl.metric};font-weight:500">رەت سانى</div><div style="font-size:20px;font-weight:600;color:${pl.avatarText}">${streak}</div></div>
+      </div>
+    </div>`;
+  });
+  return html;
+}
+
+// Leaderboard tab
+function tabLeaderboard() {
+  const cycle = STATE.activeCycle;
+  if (!cycle) return `<div style="background:#FAEEDA;border-radius:10px;padding:10px 14px;color:#633806;font-size:13px">پائال چەمبەر يوق.</div>`;
+  if (!STATE.persons.length) return `<div style="font-size:13px;color:#888">ئەزا يوق.</div>`;
+
+  const stats = STATE.persons.map((p,i) => {
+    const pe = STATE.entries.filter(e=>e.person===p.name&&e.cycleId===cycle.id);
+    return {name:p.name, total:pe.reduce((s,e)=>s+e.pages,0), days:new Set(pe.map(e=>e.date)).size, i, inactive:isInactive(p.name), streak:calcStreak(p.name)};
+  }).sort((a,b)=>b.total-a.total);
+
+  const maxPages = stats[0]?.total || 1;
+  const totalGroup = stats.reduce((s,x)=>s+x.total,0);
+  const medals = ['🥇','🥈','🥉'];
+
+  let html = `<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:1.25rem">
+    <div style="background:#EEEDFE;border-radius:10px;padding:12px"><div style="font-size:11px;color:#534AB7;font-weight:500">جەمئىي بەت</div><div style="font-size:22px;font-weight:600;color:#26215C">${totalGroup}</div></div>
+    <div style="background:#E1F5EE;border-radius:10px;padding:12px"><div style="font-size:11px;color:#0F6E56;font-weight:500">بىرىنچى</div><div style="font-size:15px;font-weight:600;color:#04342C">${stats[0]?.name||'-'}</div></div>
+    <div style="background:#E6F1FB;border-radius:10px;padding:12px"><div style="font-size:11px;color:#185FA5;font-weight:500">ئەزا سانى</div><div style="font-size:22px;font-weight:600;color:#042C53">${STATE.persons.length}</div></div>
+  </div>
+  <div style="background:#fff;border:0.5px solid #eee;border-radius:14px;overflow:hidden">`;
+
+  stats.forEach((s, rank) => {
+    const pl = pal(s.i);
+    const barW = Math.round((s.total/maxPages)*100);
+    html += `<div style="display:flex;align-items:center;gap:12px;padding:12px 16px;border-bottom:0.5px solid #f5f5f5">
+      <div style="font-size:18px;min-width:28px;text-align:center">${rank<3?medals[rank]:rank+1}</div>
+      <div style="width:32px;height:32px;border-radius:50%;background:${pl.avatar};color:${pl.avatarText};display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:500;flex-shrink:0">${initials(s.name)}</div>
+      <div style="flex:1;min-width:0">
+        <div style="display:flex;align-items:center;gap:6px;margin-bottom:5px;flex-wrap:wrap">
+          <span style="font-weight:500;font-size:14px">${s.name}</span>
+          ${s.inactive ? `<span style="background:#FCEBEB;color:#A32D2D;border-radius:20px;padding:2px 7px;font-size:11px">ھەركەتسىز</span>` : `<span style="background:#EAF3DE;color:#3B6D11;border-radius:20px;padding:2px 7px;font-size:11px">ئاكتىپ</span>`}
+          ${s.streak>=3 ? `<span style="background:${pl.metricLight};color:${pl.metric};border-radius:20px;padding:2px 7px;font-size:11px">${s.streak}كۈن</span>` : ''}
+        </div>
+        <div style="background:#f0f0f0;border-radius:4px;height:7px;overflow:hidden">
+          <div style="height:100%;width:${barW}%;background:${pl.metric};transition:width .5s"></div>
+        </div>
+      </div>
+      <div style="text-align:right;min-width:70px;margin-left:8px">
+        <div style="font-weight:600;color:${pl.metric}">${s.total} بەت</div>
+        <div style="font-size:11px;color:#888">${s.days} كۈن</div>
+      </div>
+    </div>`;
+  });
+  html += `</div>`;
+  return html;
+}
+
+// Archive tab
+function tabArchive() {
+  if (!STATE.cycles.length) return `<div style="background:#FAEEDA;border-radius:10px;padding:10px 14px;color:#633806;font-size:13px">ئارخىپ يوق.</div>`;
+  let html = '';
+  STATE.cycles.slice().reverse().forEach(c => {
+    const entries = c.entries || [];
+    const total = entries.reduce((s,e)=>s+e.pages,0);
+    const persons = [...new Set(entries.map(e=>e.person))];
+    html += `<div style="background:#fff;border:0.5px solid #eee;border-radius:14px;padding:1.25rem;margin-bottom:10px">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;flex-wrap:wrap;gap:6px">
+        <div><div style="font-weight:500;font-size:15px;color:#534AB7">${c.name}</div><div style="font-size:12px;color:#888">${c.start} — ${c.end}</div></div>
+        <div style="display:flex;gap:6px">
+          <span style="background:#EEEDFE;color:#3C3489;border-radius:20px;padding:2px 9px;font-size:12px;font-weight:500">${total} بەت</span>
+          <span style="background:#E1F5EE;color:#085041;border-radius:20px;padding:2px 9px;font-size:12px;font-weight:500">${persons.length} كىشى</span>
+        </div>
+      </div>`;
+    persons.forEach((name, pi) => {
+      const pidx = STATE.persons.findIndex(p=>p.name===name);
+      const pl = pal(pidx>=0?pidx:pi);
+      const pe = entries.filter(e=>e.person===name);
+      const ptotal = pe.reduce((s,e)=>s+e.pages,0);
+      const pdays = new Set(pe.map(e=>e.date)).size;
+      html += `<div style="display:flex;align-items:center;justify-content:space-between;padding:7px 0;border-bottom:0.5px solid #f5f5f5;font-size:13px">
+        <div style="display:flex;align-items:center;gap:8px">
+          <div style="width:26px;height:26px;border-radius:50%;background:${pl.avatar};color:${pl.avatarText};display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:500">${initials(name)}</div>
+          <span>${name}</span>
+        </div>
+        <div style="display:flex;gap:12px">
+          <span style="color:${pl.metric};font-weight:600">${ptotal} بەت</span>
+          <span style="color:#888">${pdays} كۈن</span>
+        </div>
+      </div>`;
+    });
+    html += `</div>`;
+  });
+  return html;
+}
+
+// Export tab
+function tabExport() {
+  return `<div style="background:#fff;border:0.5px solid #eee;border-radius:14px;padding:1.5rem;text-align:center">
+    <div style="font-size:16px;font-weight:500;margin-bottom:8px;color:#534AB7">Excel ھۆججىتى چىقىرىش</div>
+    <div style="font-size:13px;color:#888;margin-bottom:1.5rem">بارلىق چەمبەر ۋە خاتىرىلەر رەڭ كودى بىلەن Excel ھۆججىتىگە چىقىرىلىدۇ.</div>
+    <button onclick="exportExcel()" style="background:#534AB7;color:#fff;border:none;border-radius:10px;padding:12px 28px;font-size:15px;cursor:pointer;font-weight:500">&#8595; Excel چىقىرىش</button>
+    <div style="font-size:12px;color:#aaa;margin-top:12px">ھازىرقى چەمبەر + بارلىق ئارخىپلانغان چەمبەرلەر كىرىدۇ</div>
+  </div>`;
+}
+
+// ── Excel Export ───────────────────────────────────
+window.exportExcel = function() {
+  const wb = XLSX.utils.book_new();
+  const allCycles = [];
+  if (STATE.activeCycle) {
+    allCycles.push({...STATE.activeCycle, entries: STATE.entries.filter(e=>e.cycleId===STATE.activeCycle.id)});
+  }
+  STATE.cycles.slice().reverse().forEach(c => allCycles.push(c));
+
+  // Summary sheet
+  const summaryData = [['چەمبەر','ئىسىم','كىتاب','ئومۇمىي بەت','ئاكتىپ كۈن','ئوتتۇرا بەت/كۈن']];
+  allCycles.forEach(c => {
+    const entries = c.entries || [];
+    STATE.persons.forEach(p => {
+      const pe = entries.filter(e=>e.person===p.name);
+      const total = pe.reduce((s,e)=>s+e.pages,0);
+      const days = new Set(pe.map(e=>e.date)).size;
+      const avg = days ? Math.round(total/days) : 0;
+      summaryData.push([c.name, p.name, p.book||'', total, days, avg]);
+    });
+  });
+  const summaryWS = XLSX.utils.aoa_to_sheet(summaryData);
+  summaryWS['!cols'] = [{wch:22},{wch:18},{wch:22},{wch:14},{wch:12},{wch:16}];
+  // Color header row
+  const headerStyle = {fill:{fgColor:{rgb:'534AB7'}}, font:{color:{rgb:'FFFFFF'},bold:true}, alignment:{horizontal:'center'}};
+  ['A1','B1','C1','D1','E1','F1'].forEach(cell => {
+    if (summaryWS[cell]) summaryWS[cell].s = headerStyle;
+  });
+  XLSX.utils.book_append_sheet(wb, summaryWS, 'خۇلاسە');
+
+  // Per-cycle sheets
+  allCycles.forEach((c, ci) => {
+    const entries = c.entries || [];
+    const sheetData = [['ئىسىم','كىتاب','كۈن','بەت سانى']];
+    const colorMap = {};
+    STATE.persons.forEach((p,i) => { colorMap[p.name] = PALETTES[i%PALETTES.length]; });
+
+    entries.sort((a,b)=>a.date.localeCompare(b.date)).forEach(e => {
+      const person = STATE.persons.find(p=>p.name===e.person);
+      sheetData.push([e.person, person?.book||'', e.date, e.pages]);
+    });
+
+    const ws = XLSX.utils.aoa_to_sheet(sheetData);
+    ws['!cols'] = [{wch:18},{wch:22},{wch:14},{wch:10}];
+
+    // Color header
+    ['A1','B1','C1','D1'].forEach(cell => {
+      if (ws[cell]) ws[cell].s = headerStyle;
+    });
+
+    // Color each row by person
+    for (let r = 1; r < sheetData.length; r++) {
+      const personName = sheetData[r][0];
+      const pl = colorMap[personName];
+      if (pl) {
+        const rowColor = pl.avatar.replace('#','');
+        const textColor = pl.avatarText.replace('#','');
+        ['A','B','C','D'].forEach(col => {
+          const cell = col+(r+1);
+          if (ws[cell]) ws[cell].s = {fill:{fgColor:{rgb:rowColor}}, font:{color:{rgb:textColor}}};
+        });
+      }
+    }
+
+    const sheetName = c.name.slice(0,28) || ('چەمبەر '+(ci+1));
+    XLSX.utils.book_append_sheet(wb, ws, sheetName);
+  });
+
+  // Leaderboard sheet for active cycle
+  if (STATE.activeCycle) {
+    const lbData = [['ئورۇن','ئىسىم','كىتاب','ئومۇمىي بەت','ئاكتىپ كۈن','ئوتتۇرا']];
+    const stats = STATE.persons.map((p,i) => {
+      const pe = STATE.entries.filter(e=>e.person===p.name&&e.cycleId===STATE.activeCycle.id);
+      const total = pe.reduce((s,e)=>s+e.pages,0);
+      const days = new Set(pe.map(e=>e.date)).size;
+      return {name:p.name, book:p.book||'', total, days, avg:days?Math.round(total/days):0, i};
+    }).sort((a,b)=>b.total-a.total);
+    stats.forEach((s,rank) => lbData.push([rank+1, s.name, s.book, s.total, s.days, s.avg]));
+    const lbWS = XLSX.utils.aoa_to_sheet(lbData);
+    lbWS['!cols'] = [{wch:6},{wch:18},{wch:22},{wch:12},{wch:12},{wch:10}];
+    ['A1','B1','C1','D1','E1','F1'].forEach(cell => { if(lbWS[cell]) lbWS[cell].s = headerStyle; });
+    stats.forEach((s,rank) => {
+      const pl = PALETTES[s.i%PALETTES.length];
+      const rowColor = pl.avatar.replace('#','');
+      const textColor = pl.avatarText.replace('#','');
+      ['A','B','C','D','E','F'].forEach(col => {
+        const cell = col+(rank+2);
+        if(lbWS[cell]) lbWS[cell].s = {fill:{fgColor:{rgb:rowColor}},font:{color:{rgb:textColor}}};
+      });
+    });
+    XLSX.utils.book_append_sheet(wb, lbWS, 'رەتلىك');
+  }
+
+  XLSX.writeFile(wb, 'kitab-okux-hatirisi.xlsx');
+};
+
+// ── Navigation ─────────────────────────────────────
+window.goHome = function() { renderHome(); };
+window.renderAdmin = renderAdmin;
+
+// ── Init ───────────────────────────────────────────
+async function init() {
+  setHTML('view-home', `<div style="text-align:center;padding:4rem 1rem;color:#888;font-size:15px">يۈكلىنىۋاتىدۇ...</div>`);
+  show('view-home');
+  await loadAll();
+  renderHome();
+}
+
+init();
+</script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',Tahoma,Arial,sans-serif;background:#f7f7f9;color:#1a1a1a;direction:rtl;min-height:100vh}
+.app{max-width:860px;margin:0 auto;padding:1.5rem 1rem}
+input,select,button{font-family:inherit}
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="view-home"></div>
+  <div id="view-participant" style="display:none"></div>
+  <div id="view-admin-pin" style="display:none"></div>
+  <div id="view-admin" style="display:none"></div>
+</div>
+</body>
+</html>
