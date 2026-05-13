@@ -143,6 +143,12 @@ window.openParticipant = function(name, idxStr) {
   show('view-participant');
 };
 
+function getPersonBooks(name) {
+  const fromEntries = [...new Set(STATE.entries.filter(e=>e.person===name&&e.book).map(e=>e.book))];
+  const fromPerson = STATE.persons.find(p=>p.name===name)?.book || '';
+  return [...new Set([fromPerson, ...fromEntries].filter(Boolean))];
+}
+
 function renderParticipant(name, idx) {
   if (idx === undefined) idx = STATE.persons.findIndex(p=>p.name===name);
   const person = STATE.persons[idx] || {name,book:''};
@@ -153,74 +159,126 @@ function renderParticipant(name, idx) {
   const totalPages = myEntries.reduce((s,e)=>s+e.pages,0);
   const streak = calcStreak(name);
   const activeDays = new Set(myEntries.map(e=>e.date)).size;
+  const myBooks = getPersonBooks(name);
+  const archivedBooks = STATE.cycles.flatMap(c=>(c.entries||[]).filter(e=>e.person===name&&e.book).map(e=>e.book));
+  const allHistoryBooks = [...new Set([...myBooks,...archivedBooks,...STATE.entries.filter(e=>e.person===name&&e.book).map(e=>e.book)])];
+
+  const nameSafe = name.replace(/'/g, "\\'");
 
   let html = `<div style="background:${pl.bg};border-bottom:2px solid ${pl.border};padding:1.25rem;border-radius:14px 14px 0 0">
     <button onclick="goHome()" style="background:${pl.avatar};border:none;color:${pl.avatarText};border-radius:8px;padding:6px 14px;font-size:13px;cursor:pointer;margin-bottom:12px">&#8592; قايتىش</button>
     <div style="display:flex;align-items:center;gap:12px">
       <div style="width:54px;height:54px;border-radius:50%;background:${pl.avatar};color:${pl.avatarText};display:flex;align-items:center;justify-content:center;font-size:17px;font-weight:500">${initials(name)}</div>
-      <div>
+      <div style="min-width:0;flex:1">
         <div style="font-size:21px;font-weight:600;color:${pl.avatarText}">${name}</div>
-        <div style="font-size:13px;color:${pl.metric}">${person.book?'كىتاب: '+person.book:'كىتاب تەييارلانمىغان'}</div>
+        <div style="font-size:12px;color:${pl.metric};overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${myBooks.length?myBooks.join(' · '):'كىتاب تەييارلانمىغان'}</div>
       </div>
     </div>
   </div>
   <div style="background:#fff;border:0.5px solid #eee;border-top:none;border-radius:0 0 14px 14px;padding:1.25rem;margin-bottom:1rem">
-    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:1rem">
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:1.25rem">
       <div style="background:${pl.bg};border-radius:10px;padding:12px"><div style="font-size:11px;color:${pl.metric};font-weight:500;margin-bottom:3px">ئومۇمىي بەت</div><div style="font-size:22px;font-weight:600;color:${pl.avatarText}">${totalPages}</div></div>
       <div style="background:${pl.bg};border-radius:10px;padding:12px"><div style="font-size:11px;color:${pl.metric};font-weight:500;margin-bottom:3px">ئاكتىپ كۈن</div><div style="font-size:22px;font-weight:600;color:${pl.avatarText}">${activeDays}</div></div>
       <div style="background:${pl.bg};border-radius:10px;padding:12px"><div style="font-size:11px;color:${pl.metric};font-weight:500;margin-bottom:3px">رەت سانى</div><div style="font-size:22px;font-weight:600;color:${pl.avatarText}">${streak}</div></div>
+    </div>
+
+    <div style="background:${pl.bg};border-radius:10px;padding:12px 14px;margin-bottom:1rem">
+      <div style="font-size:13px;font-weight:600;color:${pl.metric};margin-bottom:8px">&#128214; كىتابلىرىم</div>
+      <div style="margin-bottom:8px">${myBooks.length?myBooks.map(b=>`<span style="display:inline-block;background:#fff;border:0.5px solid ${pl.border};border-radius:20px;padding:3px 12px;font-size:12px;color:${pl.avatarText};margin:2px 3px 2px 0">${b}</span>`).join(''):'<span style="font-size:12px;color:#aaa">كىتاب قوشۇلمىغان</span>'}</div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+        <input type="text" id="pp-newbook" placeholder="يېڭى كىتاب ئىسمى..."
+          style="flex:1;min-width:150px;padding:7px 10px;border:1.5px solid ${pl.border};border-radius:8px;font-size:13px;background:#fff" />
+        <button onclick="ppAddBook('${nameSafe}',${idx})"
+          style="background:${pl.metric};color:#fff;border:none;border-radius:8px;padding:7px 16px;font-size:13px;cursor:pointer;white-space:nowrap">+ قوشۇش</button>
+      </div>
+      <div id="pp-book-msg" style="font-size:12px;margin-top:5px;display:none"></div>
     </div>`;
 
   if (!cycle) {
     html += `<div style="background:#FAEEDA;border-radius:10px;padding:10px 14px;color:#633806;font-size:13px">ھازىر پائال چەمبەر يوق.</div>`;
   } else {
     if (todayEntry) {
-      html += `<div style="background:#EAF3DE;border-radius:10px;padding:10px 14px;color:#27500A;font-size:13px;margin-bottom:12px">بۈگۈن خاتىرىلەندى: <strong>${todayEntry.pages} بەت</strong></div>`;
+      html += `<div style="background:#EAF3DE;border-radius:10px;padding:10px 14px;color:#27500A;font-size:13px;margin-bottom:12px">بۈگۈن خاتىرىلەندى: <strong>${todayEntry.pages} بەت</strong>${todayEntry.book?' — '+todayEntry.book:''}</div>`;
     }
+    const bookOptions = myBooks.map(b=>`<option value="${b}"${todayEntry?.book===b?' selected':''}>${b}</option>`).join('');
     html += `<div style="font-size:14px;font-weight:500;color:${pl.avatarText};margin-bottom:10px">${todayEntry?'خاتىرىنى ئۆزگەرتىش':'بۈگۈن ئوقۇغان بەت سانىنى كىرگۈزۈڭ'}</div>
-    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end">
-      <div style="flex:1;min-width:110px">
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:8px">
+      <div style="flex:1;min-width:100px">
         <label style="font-size:12px;color:${pl.metric};display:block;margin-bottom:4px">بەت سانى</label>
         <input type="number" id="pp-pages" min="1" placeholder="مەسىلەن: 35" value="${todayEntry?todayEntry.pages:''}"
           style="width:100%;padding:8px 10px;border:1.5px solid ${pl.border};border-radius:8px;font-size:15px;background:${pl.bg};color:${pl.avatarText}" />
       </div>
-      <div style="min-width:160px">
+      <div style="flex:1;min-width:130px">
+        <label style="font-size:12px;color:${pl.metric};display:block;margin-bottom:4px">كىتاب</label>
+        <select id="pp-book-select"
+          style="width:100%;padding:8px 10px;border:1.5px solid ${pl.border};border-radius:8px;font-size:13px;background:${pl.bg};color:${pl.avatarText}">
+          <option value="">— تاللاڭ —</option>
+          ${bookOptions}
+          <option value="__new__">+ يېڭى كىتاب...</option>
+        </select>
+      </div>
+      <div style="min-width:140px">
         <label style="font-size:12px;color:${pl.metric};display:block;margin-bottom:4px">كۈن</label>
         <input type="date" id="pp-date" value="${today()}"
           style="width:100%;padding:8px 10px;border:1.5px solid ${pl.border};border-radius:8px;font-size:14px;background:${pl.bg};color:${pl.avatarText}" />
       </div>
-      <button onclick="submitReading('${name.replace(/'/g,"\\'")}',${idx})"
-        style="background:${pl.metric};color:#fff;border:none;border-radius:8px;padding:9px 20px;font-size:14px;cursor:pointer;font-weight:500">ساقلاش</button>
     </div>
+    <div id="pp-inline-newbook-wrap" style="display:none;margin-bottom:8px">
+      <label style="font-size:12px;color:${pl.metric};display:block;margin-bottom:4px">يېڭى كىتاب ئىسمى</label>
+      <input type="text" id="pp-inline-newbook" placeholder="كىتاب ئىسمىنى يېزىڭ..."
+        style="width:100%;padding:8px 10px;border:1.5px solid ${pl.border};border-radius:8px;font-size:14px;background:${pl.bg};color:${pl.avatarText}" />
+    </div>
+    <button onclick="submitReading('${nameSafe}',${idx})"
+      style="background:${pl.metric};color:#fff;border:none;border-radius:8px;padding:9px 24px;font-size:14px;cursor:pointer;font-weight:500">ساقلاش</button>
     <div id="pp-msg" style="font-size:13px;margin-top:8px;display:none"></div>`;
   }
   html += `</div>`;
 
-  // Recent entries with edit/delete
   if (myEntries.length) {
     const sorted = myEntries.slice().sort((a,b)=>b.date.localeCompare(a.date)).slice(0,10);
-    html += `<div style="background:#fff;border:0.5px solid #eee;border-radius:14px;padding:1.25rem">
+    html += `<div style="background:#fff;border:0.5px solid #eee;border-radius:14px;padding:1.25rem;margin-bottom:1rem">
       <div style="font-size:14px;font-weight:500;color:${pl.metric};margin-bottom:10px">ئاخىرقى خاتىرىلەر</div>
       <div id="pp-entries-list">`;
     sorted.forEach((e,ei) => {
       const gIdx = STATE.entries.findIndex(x=>x.person===e.person&&x.date===e.date&&x.cycleId===e.cycleId&&x.pages===e.pages);
-      html += `<div id="pp-row-${ei}" style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:${pl.bg};border-radius:8px;margin-bottom:6px;font-size:13px">
+      html += `<div id="pp-row-${ei}" style="display:flex;align-items:center;gap:8px;padding:8px 12px;background:${pl.bg};border-radius:8px;margin-bottom:6px;font-size:13px;flex-wrap:wrap">
         <span style="color:${pl.avatarText};min-width:95px">${e.date}</span>
         <span style="font-weight:600;color:${pl.metric};flex:1">${e.pages} بەت</span>
-        <button onclick="ppEditRow(${ei},${gIdx},'${name.replace(/'/g,"\\'")}',${idx})"
+        ${e.book?`<span style="font-size:11px;color:#888;background:#fff;border-radius:20px;padding:2px 8px">${e.book}</span>`:''}
+        <button onclick="ppEditRow(${ei},${gIdx},'${nameSafe}',${idx})"
           style="background:none;border:0.5px solid ${pl.border};border-radius:6px;padding:4px 10px;font-size:11px;color:${pl.metric};cursor:pointer">تەھرىر</button>
-        <button onclick="ppDeleteEntry(${gIdx},'${name.replace(/'/g,"\\'")}',${idx})"
+        <button onclick="ppDeleteEntry(${gIdx},'${nameSafe}',${idx})"
           style="background:none;border:0.5px solid #F0957580;border-radius:6px;padding:4px 10px;font-size:11px;color:#A32D2D;cursor:pointer">ئۆچۈر</button>
       </div>`;
     });
     html += `</div></div>`;
   }
 
+  if (allHistoryBooks.length) {
+    html += `<div style="background:#fff;border:0.5px solid #eee;border-radius:14px;padding:1.25rem">
+      <div style="font-size:14px;font-weight:500;color:${pl.metric};margin-bottom:10px">&#128218; ئوقۇغان كىتابلار تارىخى</div>`;
+    allHistoryBooks.forEach(book => {
+      const bEntries = [...STATE.entries.filter(e=>e.person===name&&e.book===book),
+        ...STATE.cycles.flatMap(c=>(c.entries||[]).filter(e=>e.person===name&&e.book===book))];
+      const bTotal = bEntries.reduce((s,e)=>s+e.pages,0);
+      html += `<div style="display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:0.5px solid #f5f5f5;font-size:13px">
+        <span style="color:${pl.avatarText}">&#128214; ${book}</span>
+        <span style="color:${pl.metric};font-weight:600">${bTotal} بەت</span>
+      </div>`;
+    });
+    html += `</div>`;
+  }
+
   setHTML('view-participant', html);
   window._ppName = name;
   window._ppIdx = idx;
-}
 
+  const sel = document.getElementById('pp-book-select');
+  if (sel) sel.addEventListener('change', function() {
+    const w = document.getElementById('pp-inline-newbook-wrap');
+    if (w) w.style.display = this.value === '__new__' ? '' : 'none';
+  });
+}
 window.ppEditRow = function(ei, gIdx, name, idx) {
   const e = STATE.entries[gIdx];
   if (!e) return;
@@ -256,13 +314,35 @@ window.submitReading = async function(name, idx) {
   const pages = parseInt(document.getElementById('pp-pages').value);
   const date = document.getElementById('pp-date').value;
   if (!pages||pages<1) { showPPMsg('بەت سانىنى كىرگۈزۈڭ','warn'); return; }
+  let book = document.getElementById('pp-book-select')?.value || '';
+  if (book === '__new__') book = document.getElementById('pp-inline-newbook')?.value?.trim() || '';
   const cycle = STATE.activeCycle;
   const existing = STATE.entries.findIndex(e=>e.person===name&&e.date===date&&(!cycle||e.cycleId===cycle?.id));
   if (existing>=0) STATE.entries.splice(existing,1);
-  STATE.entries.push({person:name, pages, date, cycleId:cycle?.id||'free'});
+  STATE.entries.push({person:name, pages, date, book, cycleId:cycle?.id||'free'});
+  // Also save book to person record if new
+  if (book) {
+    const pidx = STATE.persons.findIndex(p=>p.name===name);
+    if (pidx>=0 && !STATE.persons[pidx].book) { STATE.persons[pidx].book = book; await savePersons(); }
+  }
   await saveEntries();
   showPPMsg(pages+' بەت مۇۋەپپەقىيەتلىك ساقلاندى!','success');
   setTimeout(()=>renderParticipant(name,idx),700);
+};
+
+window.ppAddBook = async function(name, idx) {
+  const val = document.getElementById('pp-newbook')?.value?.trim();
+  if (!val) return;
+  const pidx = STATE.persons.findIndex(p=>p.name===name);
+  if (pidx>=0) {
+    if (!STATE.persons[pidx].book) STATE.persons[pidx].book = val;
+    await savePersons();
+  }
+  // Add a placeholder entry to remember the book name
+  const msg = document.getElementById('pp-book-msg');
+  if (msg) { msg.textContent = val+' قوشۇلدى!'; msg.style.display='block'; msg.style.color='#3B6D11'; }
+  document.getElementById('pp-newbook').value = '';
+  setTimeout(()=>renderParticipant(name,idx),600);
 };
 
 function showPPMsg(txt,type) {
