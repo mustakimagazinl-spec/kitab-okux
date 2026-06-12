@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
 <title>كىتاب ئوقۇش خاتىرىسى</title>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.23.0/firebase-firestore-compat.js"></script>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:'Segoe UI',Tahoma,Arial,sans-serif;background:#f7f7f9;color:#1a1a1a;direction:rtl;min-height:100vh}
@@ -39,10 +41,7 @@ input,select,button{font-family:inherit}
 <div id="view-pin" class="view"></div>
 <div id="view-admin" class="view"></div>
 
-<script type="module">
-import { initializeApp } from "https://www.gstatic.com/firebasejs/11.7.1/firebase-app.js";
-import { getFirestore, doc, getDoc, setDoc } from "https://www.gstatic.com/firebasejs/11.7.1/firebase-firestore.js";
-
+<script>
 const firebaseConfig = {
   apiKey: "AIzaSyAbcYUdNHOiCvdu3b1xVNUPC14K7YSbT4c",
   authDomain: "kitab-okux-hatirisi.firebaseapp.com",
@@ -52,8 +51,27 @@ const firebaseConfig = {
   appId: "1:314829432766:web:2ca052cb578e206219bbef"
 };
 
-const fbApp = initializeApp(firebaseConfig);
-const db = getFirestore(fbApp);
+firebase.initializeApp(firebaseConfig);
+const db = firebase.firestore();
+
+// Compat helper functions to mimic the modular API used throughout this file
+function doc(database, ...pathSegments) {
+  const path = pathSegments.join('/');
+  return database.doc(path);
+}
+async function getDoc(docRef) {
+  const snap = await docRef.get();
+  return {
+    exists: () => snap.exists,
+    data: () => snap.data()
+  };
+}
+async function setDoc(docRef, data, options) {
+  if (options && options.merge) {
+    return docRef.set(data, { merge: true });
+  }
+  return docRef.set(data);
+}
 
 // ── QUOTES ────────────────────────────────────────────────────────────────────
 const QUOTES = [
